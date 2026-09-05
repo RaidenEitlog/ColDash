@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import * as XLSX from "xlsx";
+import readXlsxFile from "read-excel-file/browser";
 import {
   addDoc,
   collection,
@@ -70,6 +70,42 @@ function collectionNameFor() {
   return `masterlist_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    const nextCharacter = text[index + 1];
+    if (character === '"' && quoted && nextCharacter === '"') {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(value);
+      value = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && nextCharacter === "\n") index += 1;
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+
+  if (value || row.length) {
+    row.push(value);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
 function UploadContent() {
   const [masterlistName, setMasterlistName] = useState("");
   const [monthYear, setMonthYear] = useState("");
@@ -90,9 +126,9 @@ function UploadContent() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const data = file.name.toLowerCase().endsWith(".csv")
+        ? parseCsv(await file.text())
+        : await readXlsxFile(file);
       const [header = [], ...body] = data;
       const detectedFields = header.map(String);
       setFields(detectedFields);
