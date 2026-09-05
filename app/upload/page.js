@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import readXlsxFile from "read-excel-file/browser";
+import * as XLSX from "xlsx";
 import {
   addDoc,
   collection,
@@ -106,6 +107,31 @@ function parseCsv(text) {
   return rows;
 }
 
+async function parseExcelFile(file) {
+  try {
+    return await readXlsxFile(file);
+  } catch (primaryError) {
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), {
+        type: "array",
+        cellDates: true,
+      });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) return [];
+      return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
+        header: 1,
+        defval: "",
+        raw: true,
+      });
+    } catch {
+      throw new Error(
+        "This Excel file could not be read. Save it as .xlsx or .csv and try again.",
+        { cause: primaryError },
+      );
+    }
+  }
+}
+
 function UploadContent() {
   const [masterlistName, setMasterlistName] = useState("");
   const [monthYear, setMonthYear] = useState("");
@@ -128,9 +154,14 @@ function UploadContent() {
     try {
       const data = file.name.toLowerCase().endsWith(".csv")
         ? parseCsv(await file.text())
-        : await readXlsxFile(file);
+        : await parseExcelFile(file);
       const [header = [], ...body] = data;
-      const detectedFields = header.map(String);
+      const detectedFields = Array.isArray(header)
+        ? header.map((field) => String(field ?? "").trim())
+        : [];
+      if (!detectedFields.length || detectedFields.every((field) => !field)) {
+        throw new Error("The uploaded file must contain a header row.");
+      }
       setFields(detectedFields);
       setFieldTypes(
         Object.fromEntries(detectedFields.map((field) => [field, "general"])),
