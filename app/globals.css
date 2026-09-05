@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4f7f5;
+  --foreground: #17221d;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+html.dark body {
+  background: #111817;
+  color: #e5eee9;
+}
+
+html.dark nav,
+html.dark .bg-white {
+  background-color: #1b2522 !important;
+  border-color: #354640 !important;
+}
+
+html.dark .bg-slate-50 {
+  background-color: #24312d !important;
+}
+
+html.dark .bg-slate-200 {
+  background-color: #2a3733 !important;
+  border-color: #41534c !important;
+}
+
+html.dark table th.bg-slate-200 {
+  color: #e5eee9 !important;
+}
+
+html.dark .text-emerald-950,
+html.dark .text-slate-800,
+html.dark .text-slate-700,
+html.dark .text-slate-600 {
+  color: #e5eee9 !important;
+}
+
+html.dark .text-slate-500,
+html.dark .text-slate-400 {
+  color: #aabbb4 !important;
+}
+
+html.dark input,
+html.dark select {
+  background-color: #17201e;
+  color: #e5eee9;
+  border-color: #52665e;
+}
+
+table th,
+table td {
+  border-right: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+table th:last-child,
+table td:last-child {
+  border-right: 0;
+}
+
+html.dark table th,
+html.dark table td {
+  border-right-color: rgba(148, 163, 184, 0.35);
+}
+
+.collector-highlight {
+  background-color: var(--collector-highlight, #edf9f4);
+  color: #17221d;
+}
+
+.collector-highlight.flagged {
+  background-color: var(--collector-highlight-flagged, #d1fae5);
+}
+
+.collector-highlight td {
+  color: inherit;
+}
+
+html.dark .collector-highlight {
+  background-color: var(--collector-highlight-dark, #1d302b);
+  color: #e5eee9;
+}
+
+html.dark .collector-highlight.flagged {
+  background-color: var(--collector-highlight-flagged-dark, #25443b);
+}
+
+.overflow-x-auto {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.overflow-x-auto > table {
+  min-width: 1700px;
+}
+

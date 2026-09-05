@@ -1,0 +1,39 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isAuthorized() {
+      return signedIn()
+        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role in ['admin', 'viewer'];
+    }
+
+    function isMasterlistCollection(collectionName) {
+      return collectionName.matches('^masterlist_[a-f0-9]{32}$')
+        || collectionName.matches('^[a-z0-9_]+_[a-z0-9]{6}$');
+    }
+
+    match /profiles/{userId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow write: if isAdmin() && request.auth.uid == userId;
+    }
+
+    match /masterlist_registry/{masterlistId} {
+      allow read: if isAuthorized();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /{collectionName}/{documentId} {
+      allow read: if isAuthorized() && isMasterlistCollection(collectionName);
+      allow create, update, delete: if isAdmin() && isMasterlistCollection(collectionName);
+    }
+  }
+}
