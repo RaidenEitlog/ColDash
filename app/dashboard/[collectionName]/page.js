@@ -448,6 +448,7 @@ function CollectionContent({ collectionName }) {
   const [hasNextPage, setHasNextPage] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [selectedCollector, setSelectedCollector] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [collectorsOpen, setCollectorsOpen] = useState(false);
   const [savingThemeField, setSavingThemeField] = useState("");
   useEffect(() => {
@@ -503,7 +504,7 @@ function CollectionContent({ collectionName }) {
   useEffect(() => {
     let isMounted = true;
     async function loadRecords() {
-      const cursor = pageCursors[currentPage - 1];
+      const cursor = pageCursorsRef.current[currentPage - 1];
       if (currentPage > 1 && !cursor) return;
       setRecordsLoading(true);
       try {
@@ -541,7 +542,14 @@ function CollectionContent({ collectionName }) {
   }, [collectionName, currentPage, pageSize, selectedCollector, collectorField]);
   const summary = registry?.summary || {};
   const collectorStats = Array.isArray(summary.collectorStats) ? summary.collectorStats : [];
-  const filteredRecords = records;
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+  const filteredRecords = normalizedSearchTerm
+    ? records.filter((record) =>
+        Object.values(record).some((value) =>
+          String(value ?? "").toLowerCase().includes(normalizedSearchTerm),
+        ),
+      )
+    : records;
   const collectibleTotal = numberValue(summary.collectibleTotal);
   const paidTotal = numberValue(summary.paidTotal);
   const ptpTotal = numberValue(summary.ptpTotal);
@@ -554,7 +562,7 @@ function CollectionContent({ collectionName }) {
     : Number(summary.count || 0);
   const rangeStart = records.length ? (currentPage - 1) * pageSize + 1 : 0;
   const rangeEnd = records.length ? rangeStart + records.length - 1 : 0;
-  const visibleRecords = records;
+  const visibleRecords = filteredRecords;
   async function changeTheme(fieldName, nextColor) {
     setRegistry((current) => ({ ...current, [fieldName]: nextColor }));
     if (!registry?.id) return;
@@ -779,24 +787,38 @@ function CollectionContent({ collectionName }) {
       )}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
         <span>
-          Showing {rangeStart}-{rangeEnd} of {totalClientCount.toLocaleString()}{" "}
+          Showing {normalizedSearchTerm ? `${filteredRecords.length} matching rows on this page` : `${rangeStart}-${rangeEnd} of ${totalClientCount.toLocaleString()}`} {" "}
           clients
         </span>
-        <label className="flex items-center gap-2">
-          Rows per page
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setCurrentPage(1);
-              pageCursorsRef.current = [null];
-            }}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1"
-          >
-            <option value="50">50</option>
-            <option value="100">100</option>
-          </select>
-        </label>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2">
+            Search loaded rows
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search..."
+              className="w-48 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-slate-800 outline-none focus:border-emerald-600"
+              aria-label="Search loaded rows"
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            Rows per page
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Math.min(50, Number(event.target.value)));
+                setCurrentPage(1);
+                pageCursorsRef.current = [null];
+              }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1"
+            >
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="min-w-[1200px] w-full text-left text-sm">
