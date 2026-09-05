@@ -13,6 +13,59 @@ import {
 import AuthGate from "../../components/AuthGate";
 import { db } from "../../lib/firebase";
 
+function toNumber(value) {
+  const parsed = Number(String(value ?? "").replace(/,/g, ""));
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function buildSummary(rows, collectibleField, fieldNames) {
+  const collectorField = fieldNames.find((header) => String(header).trim().toLowerCase() === "collector") || "";
+  const collectorMap = new Map();
+  let totalClients = 0;
+  let collectibleTotal = 0;
+  let paidTotal = 0;
+  let ptpTotal = 0;
+
+  rows.forEach((row) => {
+    totalClients += 1;
+    const amountValue = toNumber(row[collectibleField || ""]);
+    const paidValue = toNumber(row.amountPaid);
+    const ptpValue = toNumber(row.ptp);
+
+    collectibleTotal += Math.max(0, amountValue - paidValue);
+    paidTotal += paidValue;
+    ptpTotal += ptpValue;
+
+    if (!collectorField) return;
+
+    const name = String(row[collectorField] || "Unassigned").trim() || "Unassigned";
+    const key = name.toLowerCase();
+    const current = collectorMap.get(key) || {
+      name,
+      clients: 0,
+      amount: 0,
+      balance: 0,
+      paid: 0,
+      ptp: 0,
+    };
+
+    current.clients += 1;
+    current.amount += amountValue;
+    current.balance += Math.max(0, amountValue - paidValue);
+    current.paid += paidValue;
+    current.ptp += ptpValue;
+    collectorMap.set(key, current);
+  });
+
+  return {
+    count: totalClients,
+    collectibleTotal,
+    paidTotal,
+    ptpTotal,
+    collectorStats: [...collectorMap.values()].sort((left, right) => right.ptp - left.ptp),
+  };
+}
+
 function collectionNameFor() {
   return `masterlist_${crypto.randomUUID().replace(/-/g, "")}`;
 }
@@ -100,6 +153,7 @@ function UploadContent() {
         .toUpperCase();
       const displayName = `${masterlistName.trim()} ${dateLabel}`;
       const name = collectionNameFor();
+      const summary = buildSummary(rows, collectibleField, fields);
       await addDoc(collection(db, "masterlist_registry"), {
         masterlistName: displayName,
         createdAt: serverTimestamp(),
@@ -110,6 +164,7 @@ function UploadContent() {
         flagTheme,
         unflagTheme,
         collectionName: name,
+        summary,
       });
       for (let start = 0; start < rows.length; start += 500) {
         const batch = writeBatch(db);

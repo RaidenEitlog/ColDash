@@ -56,6 +56,59 @@ function getCollectorField(headers) {
   return headers.find((header) => String(header).trim().toLowerCase() === "collector") || "";
 }
 
+function buildSummaryFromRecords(records, amountField, collectorField) {
+  const collectorMap = new Map();
+  let totalClients = 0;
+  let collectibleTotal = 0;
+  let paidTotal = 0;
+  let ptpTotal = 0;
+
+  records.forEach((record) => {
+    totalClients += 1;
+    const amountValue = numberValue(record[amountField]);
+    const paidValue = numberValue(record.amountPaid);
+    const ptpValue = numberValue(record.ptp);
+
+    collectibleTotal += Math.max(0, amountValue - paidValue);
+    paidTotal += paidValue;
+    ptpTotal += ptpValue;
+
+    if (!collectorField) return;
+
+    const name = String(record[collectorField] || "Unassigned").trim() || "Unassigned";
+    const key = name.toLowerCase();
+    const current = collectorMap.get(key) || {
+      name,
+      clients: 0,
+      amount: 0,
+      balance: 0,
+      paid: 0,
+      ptp: 0,
+    };
+
+    current.clients += 1;
+    current.amount += amountValue;
+    current.balance += Math.max(0, amountValue - paidValue);
+    current.paid += paidValue;
+    current.ptp += ptpValue;
+    collectorMap.set(key, current);
+  });
+
+  return {
+    count: totalClients,
+    collectibleTotal,
+    paidTotal,
+    ptpTotal,
+    collectorStats: [...collectorMap.values()].sort((left, right) => right.ptp - left.ptp),
+  };
+}
+
+async function persistRegistrySummary(registryId, records, amountField, collectorField) {
+  if (!registryId) return;
+  const summary = buildSummaryFromRecords(records, amountField, collectorField);
+  await updateDoc(doc(db, "masterlist_registry", registryId), { summary });
+}
+
 function ConfirmDialog({ message, onConfirm, onCancel }) {
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/35 px-4 py-6"><div role="dialog" aria-modal="true" className="w-full max-w-md rounded-xl border border-slate-300 border-t-4 border-t-emerald-600 bg-white p-7 shadow-2xl dark:border-slate-600 dark:bg-[#24312d]"><p className="text-xs font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-400">Confirm action</p><h2 className="mt-2 text-xl font-semibold text-emerald-950 dark:text-white">Are you sure?</h2><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{message}</p><div className="mt-7 flex justify-end gap-3"><button type="button" onClick={onCancel} className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200">No, cancel</button><button type="button" onClick={onConfirm} className="rounded-md bg-emerald-800 px-4 py-2 text-sm font-medium text-white">Yes, continue</button></div></div></div>;
 }
@@ -224,7 +277,7 @@ function EditClient({ record, headers, collectionName, onSaved }) {
   </>;
 }
 
-function DeleteClient({ record, collectionName }) {
+function DeleteClient({ record, collectionName, onDeleted }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
@@ -234,6 +287,7 @@ function DeleteClient({ record, collectionName }) {
     setError("");
     try {
       await deleteDoc(doc(db, collectionName, record.id));
+      onDeleted(record.id);
       setConfirmOpen(false);
     } catch (deleteError) {
       setError(deleteError.message);
@@ -553,10 +607,36 @@ function CollectionContent({ collectionName }) {
         item.id === record.id ? { ...item, [field]: value } : item,
       ),
     );
+    const nextRecords = records.map((item) =>
+      item.id === record.id ? { ...item, [field]: value } : item,
+    );
+    if (registry?.id) {
+      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+    }
   }
   function handlePaymentSaved(record, value, updates) {
-    updateRow(record, "amountPaid", updates.amountPaid);
-    updateRow(record, "ptp", updates.ptp);
+    const nextRecord = { ...record, ...updates };
+    setRecords((current) =>
+      current.map((item) => item.id === record.id ? nextRecord : item),
+    );
+    if (registry?.id) {
+      const nextRecords = records.map((item) => item.id === record.id ? nextRecord : item);
+      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+    }
+  }
+  function handleRecordSaved(updates) {
+    setRecords((current) => current.map((item) => item.id === updates.id ? { ...item, ...updates } : item));
+    if (registry?.id) {
+      const nextRecords = records.map((item) => item.id === updates.id ? { ...item, ...updates } : item);
+      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+    }
+  }
+  function handleRecordDeleted(recordId) {
+    const nextRecords = records.filter((item) => item.id !== recordId);
+    setRecords(nextRecords);
+    if (registry?.id) {
+      persistRegistrySummary(collectionName, registry.id, nextRecords, amountField, collectorField);
+    }
   }
   return (
     <>
@@ -825,8 +905,8 @@ function CollectionContent({ collectionName }) {
                     <div className="grid grid-cols-2 gap-2">
                       {getCurrentBalance(record, amountField) === 0 ? <PaidFlagAction record={record} collectionName={collectionName} onSaved={(value) => updateRow(record, "isPaid", value)} /> : <AmountEditor record={record} collectionName={collectionName} field="amountPaid" label="Add paid" onSaved={(value, updates) => handlePaymentSaved(record, value, updates)} getAdditionalUpdates={(value) => { const nextPaid = numberValue(record.amountPaid) + value; return { amountPaid: nextPaid, ptp: Math.max(0, numberValue(record.ptp) - value) }; }} />}
                       {getCurrentBalance(record, amountField) > 0 && <AmountEditor record={record} collectionName={collectionName} field="ptp" label="Set PTP" onSaved={(value) => updateRow(record, "ptp", value)} />}
-                      <EditClient record={record} headers={headers} collectionName={collectionName} onSaved={(updates) => setRecords((current) => current.map((item) => item.id === record.id ? { ...item, ...updates } : item))} />
-                      <DeleteClient record={record} collectionName={collectionName} />
+                      <EditClient record={record} headers={headers} collectionName={collectionName} onSaved={(updates) => handleRecordSaved({ ...updates, id: record.id })} />
+                      <DeleteClient record={record} collectionName={collectionName} onDeleted={handleRecordDeleted} />
                     </div>
                   </td>
                 )}

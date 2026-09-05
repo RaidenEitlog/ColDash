@@ -5,8 +5,6 @@ import { useEffect, useState } from "react";
 import {
   collection,
   doc,
-  getCountFromServer,
-  getDocs,
   onSnapshot,
   updateDoc,
 } from "firebase/firestore";
@@ -38,78 +36,57 @@ function DashboardContent() {
     return unsubscribe;
   }, []);
   useEffect(() => {
-    const unsubscribe = onSnapshot(
+    let isMounted = true;
+
+    const registryUnsubscribe = onSnapshot(
       collection(db, "masterlist_registry"),
-      async (snapshot) => {
-        try {
-          const results = await Promise.all(
-            snapshot.docs.map(async (item) => {
-              const data = item.data();
-              const collectionRef = collection(db, data.collectionName);
-              const [countSnapshot, recordsSnapshot] = await Promise.all([
-                getCountFromServer(collectionRef),
-                getDocs(collectionRef),
-              ]);
-              const records = recordsSnapshot.docs.map((record) => ({
-                id: record.id,
-                ...record.data(),
-              }));
-              let collectibleTotal = 0;
-              let paidTotal = 0;
-              let ptpTotal = 0;
-              const collectibleField = findCollectibleField(data);
-              const collectorField = getCollectorField(data.fieldNames || []);
-              if (collectibleField) {
-                collectibleTotal = records.reduce((sum, record) => {
-                  const amount = Number(
-                    String(record[collectibleField] ?? "").replace(/,/g, ""),
-                  );
-                  const paid = Number(
-                    String(record.amountPaid ?? "").replace(/,/g, ""),
-                  ) || 0;
-                  return Number.isNaN(amount)
-                    ? sum
-                    : sum + Math.max(0, amount - paid);
-                }, 0);
-              }
-              paidTotal = records.reduce(
-                (sum, record) =>
-                  sum +
-                  (Number(String(record.amountPaid ?? "").replace(/,/g, "")) ||
-                    0),
-                0,
-              );
-              ptpTotal = records.reduce(
-                (sum, record) =>
-                  sum +
-                  (Number(String(record.ptp ?? "").replace(/,/g, "")) || 0),
-                0,
-              );
-              return {
-                id: item.id,
-                ...data,
-                count: countSnapshot.data().count,
-                collectibleField,
-                collectorField,
-                collectibleTotal,
-                paidTotal,
-                ptpTotal,
-                records,
-              };
-            }),
-          );
-          setLists(results);
-          setError("");
-        } catch (loadError) {
-          setError(loadError.message);
-        }
+      (snapshot) => {
+        if (!isMounted) return;
+
+        const results = snapshot.docs.map((item) => {
+          const data = item.data();
+          const summary = data.summary || {};
+          const collectibleField = findCollectibleField(data);
+          const collectorField = getCollectorField(data.fieldNames || []);
+          const normalizedSummary = {
+            count: Number(summary.count ?? data.count ?? 0),
+            collectibleTotal: Number(summary.collectibleTotal ?? data.collectibleTotal ?? 0),
+            paidTotal: Number(summary.paidTotal ?? data.paidTotal ?? 0),
+            ptpTotal: Number(summary.ptpTotal ?? data.ptpTotal ?? 0),
+            collectorStats: Array.isArray(summary.collectorStats)
+              ? summary.collectorStats
+              : Array.isArray(data.collectorStats)
+                ? data.collectorStats
+                : [],
+          };
+
+          return {
+            id: item.id,
+            ...data,
+            count: normalizedSummary.count,
+            collectibleField,
+            collectorField,
+            collectibleTotal: normalizedSummary.collectibleTotal,
+            paidTotal: normalizedSummary.paidTotal,
+            ptpTotal: normalizedSummary.ptpTotal,
+            records: [],
+            collectorStats: normalizedSummary.collectorStats,
+          };
+        });
+
+        setLists(results);
+        setError("");
       },
       (loadError) => {
+        if (!isMounted) return;
         setError(loadError.message);
       },
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      registryUnsubscribe();
+    };
   }, []);
   const total = lists.reduce((sum, item) => sum + item.count, 0);
   const collectibleTotal = lists.reduce(
@@ -119,40 +96,31 @@ function DashboardContent() {
   const paidTotal = lists.reduce((sum, item) => sum + item.paidTotal, 0);
   const ptpTotal = lists.reduce((sum, item) => sum + item.ptpTotal, 0);
   const collectorStats = [...lists.reduce((groups, list) => {
-    const collectorField = list.collectorField || "";
-    if (!collectorField) return groups;
-    list.records.forEach((record) => {
-      const name = String(record[collectorField] || "Unassigned").trim() || "Unassigned";
-      const key = name.toLowerCase();
+    (list.collectorStats || []).forEach((collector) => {
+      const key = String(collector.name || "Unassigned").trim().toLowerCase();
       const current = groups.get(key) || {
-        name,
+        name: String(collector.name || "Unassigned").trim() || "Unassigned",
         clients: 0,
         amount: 0,
         balance: 0,
         paid: 0,
         ptp: 0,
       };
-      const amountValue = Number(String(record[list.collectibleField || ""] ?? "").replace(/,/g, "")) || 0;
-      const balance = Math.max(0, amountValue - (Number(String(record.amountPaid ?? "").replace(/,/g, "")) || 0));
-      current.clients += 1;
-      current.amount += amountValue;
-      current.balance += balance;
-      current.paid += Number(String(record.amountPaid ?? "").replace(/,/g, "")) || 0;
-      current.ptp += Number(String(record.ptp ?? "").replace(/,/g, "")) || 0;
+      current.clients += Number(collector.clients || 0);
+      current.amount += Number(collector.amount || 0);
+      current.balance += Number(collector.balance || 0);
+      current.paid += Number(collector.paid || 0);
+      current.ptp += Number(collector.ptp || 0);
       groups.set(key, current);
     });
     return groups;
   }, new Map()).values()].sort((left, right) => right.ptp - left.ptp);
   const visibleLists = selectedCollector
     ? lists.filter((list) =>
-        (list.records || []).some((record) => {
-          const collectorField = list.collectorField || "";
-          return (
-            collectorField &&
-            String(record[collectorField] || "Unassigned").trim().toLowerCase() ===
-              selectedCollector
-          );
-        }),
+        (list.collectorStats || []).some(
+          (collector) =>
+            String(collector.name || "Unassigned").trim().toLowerCase() === selectedCollector,
+        ),
       )
     : lists;
   const money = (value) =>
