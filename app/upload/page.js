@@ -107,28 +107,39 @@ function parseCsv(text) {
   return rows;
 }
 
+function hasCellValue(row) {
+  return Array.isArray(row) && row.some((value) => String(value ?? "").trim());
+}
+
+function hasUsableRows(data) {
+  return Array.isArray(data) && data.some(hasCellValue);
+}
+
 async function parseExcelFile(file) {
   try {
-    return await readXlsxFile(file);
-  } catch (primaryError) {
-    try {
-      const workbook = XLSX.read(await file.arrayBuffer(), {
-        type: "array",
-        cellDates: true,
-      });
-      const firstSheetName = workbook.SheetNames[0];
-      if (!firstSheetName) return [];
-      return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
-        header: 1,
-        defval: "",
-        raw: true,
-      });
-    } catch {
-      throw new Error(
-        "This Excel file could not be read. Save it as .xlsx or .csv and try again.",
-        { cause: primaryError },
-      );
-    }
+    const data = await readXlsxFile(file);
+    if (hasUsableRows(data)) return data;
+  } catch {
+    // Try the fallback parser below for malformed workbook styles.
+  }
+
+  try {
+    const workbook = XLSX.read(await file.arrayBuffer(), {
+      type: "array",
+      cellDates: true,
+    });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) return [];
+    return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
+      header: 1,
+      defval: "",
+      raw: true,
+    });
+  } catch (fallbackError) {
+    throw new Error(
+      "This Excel file could not be read. Save it as .xlsx or .csv and try again.",
+      { cause: fallbackError },
+    );
   }
 }
 
@@ -155,7 +166,9 @@ function UploadContent() {
       const data = file.name.toLowerCase().endsWith(".csv")
         ? parseCsv(await file.text())
         : await parseExcelFile(file);
-      const [header = [], ...body] = data;
+      const headerIndex = data.findIndex(hasCellValue);
+      const header = headerIndex >= 0 ? data[headerIndex] : [];
+      const body = headerIndex >= 0 ? data.slice(headerIndex + 1) : [];
       const detectedFields = Array.isArray(header)
         ? header.map((field) => String(field ?? "").trim())
         : [];
