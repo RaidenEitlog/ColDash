@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -9,8 +9,10 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  limit,
   onSnapshot,
   query,
+  startAfter,
   updateDoc,
   where,
   writeBatch,
@@ -107,6 +109,13 @@ async function persistRegistrySummary(registryId, records, amountField, collecto
   if (!registryId) return;
   const summary = buildSummaryFromRecords(records, amountField, collectorField);
   await updateDoc(doc(db, "masterlist_registry", registryId), { summary });
+}
+
+async function refreshRegistrySummary(registryId, collectionName, amountField, collectorField) {
+  if (!registryId) return;
+  const snapshot = await getDocs(collection(db, collectionName));
+  const records = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  await persistRegistrySummary(registryId, records, amountField, collectorField);
 }
 
 function ConfirmDialog({ message, onConfirm, onCancel }) {
@@ -435,6 +444,9 @@ function CollectionContent({ collectionName }) {
   const [error, setError] = useState("");
   const [pageSize, setPageSize] = useState(50);
   const [currentPage, setCurrentPage] = useState(1);
+  const pageCursorsRef = useRef([null]);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
   const [selectedCollector, setSelectedCollector] = useState("");
   const [collectorsOpen, setCollectorsOpen] = useState(false);
   const [savingThemeField, setSavingThemeField] = useState("");
@@ -442,24 +454,6 @@ function CollectionContent({ collectionName }) {
     const authUnsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) setRole(await getUserRole(user));
     });
-    const recordsUnsubscribe = onSnapshot(
-      collection(db, collectionName),
-      (recordsSnapshot) => {
-        setRecords(
-          recordsSnapshot.docs.map((item) => ({
-            id: item.id,
-            ...item.data(),
-            amountPaid: item.data().amountPaid || 0,
-            ptp: item.data().ptp || 0,
-            isPaid: item.data().isPaid || false,
-          })),
-        );
-        setError("");
-      },
-      (loadError) => {
-        setError(loadError.message);
-      },
-    );
     const registryUnsubscribe = onSnapshot(
       query(
         collection(db, "masterlist_registry"),
@@ -480,7 +474,6 @@ function CollectionContent({ collectionName }) {
 
     return () => {
       authUnsubscribe();
-      recordsUnsubscribe();
       registryUnsubscribe();
     };
   }, [collectionName]);
@@ -507,42 +500,61 @@ function CollectionContent({ collectionName }) {
     headers.find((header) => /^amount$/i.test(header)) ||
     "";
   const collectorField = getCollectorField(headers);
-  const collectorStats = [...records.reduce((groups, record) => {
-    const name = String(record[collectorField] || "Unassigned").trim() || "Unassigned";
-    const key = name.toLowerCase();
-    const current = groups.get(key) || { name, clients: 0, amount: 0, balance: 0, paid: 0, ptp: 0 };
-    current.clients += 1;
-    current.amount += numberValue(record[amountField]);
-    current.balance += getCurrentBalance(record, amountField);
-    current.paid += numberValue(record.amountPaid);
-    current.ptp += getEffectivePtp(record, amountField);
-    groups.set(key, current);
-    return groups;
-  }, new Map()).values()].sort((left, right) => right.ptp - left.ptp);
-  const filteredRecords = selectedCollector
-    ? records.filter((record) => String(record[collectorField] || "Unassigned").trim().toLowerCase() === selectedCollector)
-    : records;
-  const collectibleTotal = records.reduce(
-    (sum, record) => sum + numberValue(record[amountField]),
-    0,
+  useEffect(() => {
+    let isMounted = true;
+    async function loadRecords() {
+      const cursor = pageCursors[currentPage - 1];
+      if (currentPage > 1 && !cursor) return;
+      setRecordsLoading(true);
+      try {
+        const constraints = [];
+        if (selectedCollector && collectorField) {
+          constraints.push(where(collectorField, "==", selectedCollector));
+        }
+        if (cursor) constraints.push(startAfter(cursor));
+        constraints.push(limit(pageSize));
+        const recordsSnapshot = await getDocs(query(collection(db, collectionName), ...constraints));
+        if (!isMounted) return;
+        setRecords(
+          recordsSnapshot.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+            amountPaid: item.data().amountPaid || 0,
+            ptp: item.data().ptp || 0,
+            isPaid: item.data().isPaid || false,
+          })),
+        );
+        const lastDocument = recordsSnapshot.docs.at(-1);
+        if (lastDocument) pageCursorsRef.current[currentPage] = lastDocument;
+        setHasNextPage(recordsSnapshot.docs.length === pageSize);
+        setError("");
+      } catch (loadError) {
+        if (isMounted) setError(loadError.message);
+      } finally {
+        if (isMounted) setRecordsLoading(false);
+      }
+    }
+    loadRecords();
+    return () => {
+      isMounted = false;
+    };
+  }, [collectionName, currentPage, pageSize, selectedCollector, collectorField]);
+  const summary = registry?.summary || {};
+  const collectorStats = Array.isArray(summary.collectorStats) ? summary.collectorStats : [];
+  const filteredRecords = records;
+  const collectibleTotal = numberValue(summary.collectibleTotal);
+  const paidTotal = numberValue(summary.paidTotal);
+  const ptpTotal = numberValue(summary.ptpTotal);
+  const balanceTotal = collectibleTotal;
+  const selectedCollectorSummary = collectorStats.find(
+    (collector) => String(collector.name).trim().toLowerCase() === selectedCollector.toLowerCase(),
   );
-  const paidTotal = records.reduce(
-    (sum, record) => sum + numberValue(record.amountPaid),
-    0,
-  );
-  const ptpTotal = records.reduce(
-    (sum, record) => sum + getEffectivePtp(record, amountField),
-    0,
-  );
-  const balanceTotal = records.reduce(
-    (sum, record) => sum + getCurrentBalance(record, amountField),
-    0,
-  );
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
-  const pageStart = (currentPage - 1) * pageSize;
-  const visibleRecords = filteredRecords.slice(pageStart, pageStart + pageSize);
-  const rangeStart = filteredRecords.length ? pageStart + 1 : 0;
-  const rangeEnd = Math.min(pageStart + pageSize, filteredRecords.length);
+  const totalClientCount = selectedCollector
+    ? Number(selectedCollectorSummary?.clients || 0)
+    : Number(summary.count || 0);
+  const rangeStart = records.length ? (currentPage - 1) * pageSize + 1 : 0;
+  const rangeEnd = records.length ? rangeStart + records.length - 1 : 0;
+  const visibleRecords = records;
   async function changeTheme(fieldName, nextColor) {
     setRegistry((current) => ({ ...current, [fieldName]: nextColor }));
     if (!registry?.id) return;
@@ -607,11 +619,8 @@ function CollectionContent({ collectionName }) {
         item.id === record.id ? { ...item, [field]: value } : item,
       ),
     );
-    const nextRecords = records.map((item) =>
-      item.id === record.id ? { ...item, [field]: value } : item,
-    );
     if (registry?.id) {
-      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+      refreshRegistrySummary(registry.id, collectionName, amountField, collectorField);
     }
   }
   function handlePaymentSaved(record, value, updates) {
@@ -620,22 +629,20 @@ function CollectionContent({ collectionName }) {
       current.map((item) => item.id === record.id ? nextRecord : item),
     );
     if (registry?.id) {
-      const nextRecords = records.map((item) => item.id === record.id ? nextRecord : item);
-      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+      refreshRegistrySummary(registry.id, collectionName, amountField, collectorField);
     }
   }
   function handleRecordSaved(updates) {
     setRecords((current) => current.map((item) => item.id === updates.id ? { ...item, ...updates } : item));
     if (registry?.id) {
-      const nextRecords = records.map((item) => item.id === updates.id ? { ...item, ...updates } : item);
-      persistRegistrySummary(registry.id, nextRecords, amountField, collectorField);
+      refreshRegistrySummary(registry.id, collectionName, amountField, collectorField);
     }
   }
   function handleRecordDeleted(recordId) {
     const nextRecords = records.filter((item) => item.id !== recordId);
     setRecords(nextRecords);
     if (registry?.id) {
-      persistRegistrySummary(collectionName, registry.id, nextRecords, amountField, collectorField);
+      refreshRegistrySummary(registry.id, collectionName, amountField, collectorField);
     }
   }
   return (
@@ -660,7 +667,7 @@ function CollectionContent({ collectionName }) {
         <div className="mt-3 flex flex-wrap gap-6 text-slate-500">
           <span>
             <strong className="text-2xl font-semibold text-emerald-950">
-              {records.length.toLocaleString()}
+              {totalClientCount.toLocaleString()}
             </strong>{" "}
             clients
           </span>
@@ -731,14 +738,14 @@ function CollectionContent({ collectionName }) {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Collectors</h2>
               <p className="mt-1 text-sm text-slate-500">{collectorsOpen ? "Hide collector details" : "Show collector details"}</p>
             </button>
-            {selectedCollector && <button type="button" onClick={() => { setSelectedCollector(""); setCurrentPage(1); }} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700">Show all</button>}
+            {selectedCollector && <button type="button" onClick={() => { setSelectedCollector(""); setCurrentPage(1); pageCursorsRef.current = [null]; }} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700">Show all</button>}
           </div>
           {collectorsOpen && <div className="mt-4 overflow-x-auto">
             <CollectorCharts collectors={collectorStats} />
             <table className="min-w-[760px] w-full text-left text-sm">
               <thead><tr>{["COLLECTOR", "CLIENTS", "AMOUNT", "CURRENT BALANCE", "PAID", "PTP"].map((heading) => <th key={heading} style={{ backgroundColor: headerColor }} className="whitespace-nowrap px-3 py-2 font-semibold text-white">{heading}</th>)}</tr></thead>
               <tbody>{collectorStats.map((collector) => {
-                const isSelected = selectedCollector === collector.name.toLowerCase();
+                const isSelected = selectedCollector === collector.name;
                 const isDark = document?.documentElement?.classList?.contains("dark");
                 return (
                   <tr
@@ -751,7 +758,11 @@ function CollectionContent({ collectionName }) {
                           : "rgba(148, 163, 184, 0.08)"
                         : "transparent",
                     }}
-                    onClick={() => { setSelectedCollector(collector.name.toLowerCase()); setCurrentPage(1); }}
+                    onClick={() => {
+                      setSelectedCollector(isSelected ? "" : collector.name);
+                      setCurrentPage(1);
+                      pageCursorsRef.current = [null];
+                    }}
                   >
                     <td className="px-3 py-2 font-medium text-slate-800">{collector.name}</td>
                     <td className="px-3 py-2 text-slate-700">{collector.clients.toLocaleString()}</td>
@@ -768,7 +779,7 @@ function CollectionContent({ collectionName }) {
       )}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
         <span>
-          Showing {rangeStart}-{rangeEnd} of {filteredRecords.length.toLocaleString()}{" "}
+          Showing {rangeStart}-{rangeEnd} of {totalClientCount.toLocaleString()}{" "}
           clients
         </span>
         <label className="flex items-center gap-2">
@@ -778,6 +789,7 @@ function CollectionContent({ collectionName }) {
             onChange={(event) => {
               setPageSize(Number(event.target.value));
               setCurrentPage(1);
+              pageCursorsRef.current = [null];
             }}
             className="rounded-md border border-slate-300 bg-white px-2 py-1"
           >
@@ -918,10 +930,10 @@ function CollectionContent({ collectionName }) {
           <p className="px-4 py-8 text-slate-500">No documents found.</p>
         )}
       </div>
-      {filteredRecords.length > 0 && (
+      {totalClientCount > 0 && (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
           <span className="text-slate-500">
-            Page {currentPage} of {totalPages}
+            Page {currentPage}
           </span>
           <div className="flex items-center gap-1">
             <button
@@ -932,21 +944,10 @@ function CollectionContent({ collectionName }) {
             >
               Previous
             </button>
-            {Array.from({ length: totalPages }, (_, index) => index + 1)
-              .slice(Math.max(0, currentPage - 3), currentPage + 2)
-              .map((page) => (
-                <button
-                  type="button"
-                  key={page}
-                  onClick={() => setCurrentPage(page)}
-                  className={`rounded-md border px-3 py-1.5 ${page === currentPage ? "border-emerald-700 bg-emerald-900 text-white" : "border-slate-300 text-slate-700"}`}
-                >
-                  {page}
-                </button>
-              ))}
+            <span className="px-2 text-slate-500">Page {currentPage}</span>
             <button
               type="button"
-              disabled={currentPage === totalPages}
+              disabled={!hasNextPage || recordsLoading}
               onClick={() => setCurrentPage((page) => page + 1)}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 disabled:opacity-40"
             >
